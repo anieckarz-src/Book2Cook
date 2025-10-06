@@ -1,6 +1,6 @@
 # Dokument wymagań produktu (PRD) - Book2Cook
 ## 1. Przegląd produktu
-Book2Cook (MVP) to webowa aplikacja umożliwiająca użytkownikom konwersję e-booków z przepisami (PDF z warstwą tekstową) na ustrukturyzowane, edytowalne przepisy, tworzenie tygodniowych planów posiłków i generowanie z nich list zakupów. MVP skupia się na core flow: import PDF → automatyczna ekstrakcja przepisów → inline edycja → plan tygodniowy → lista zakupów. Aplikacja będzie dostępna w języku polskim i oferuje prosty system kont użytkowników.
+Book2Cook (MVP) to webowa aplikacja umożliwiająca użytkownikom konwersję e-booków z przepisami (PDF z warstwą tekstową) na ustrukturyzowane, edytowalne przepisy, tworzenie tygodniowych planów posiłków i generowanie z nich list zakupów. MVP skupia się na core flow: import PDF → automatyczna ekstrakcja przepisów (do JSON) → inline edycja → plan tygodniowy → lista zakupów. Aplikacja będzie dostępna w języku polskim i oferuje prosty system kont użytkowników.
 
 Kluczowe założenia techniczne i operacyjne:
 - Obsługiwane jedynie PDF-y z warstwą tekstową (bez OCR).  
@@ -18,9 +18,11 @@ Użytkownicy posiadają e-booki z przepisami (często w formacie PDF), które tr
 - Użytkownik może wgrać plik PDF (formaty: PDF z warstwą tekstową).  
 - System odrzuca pliki >100 MB z komunikatem wyjaśniającym.  
 - Upload inicjuje asynchroniczne zadanie w kolejce.  
-- System ekstraktuje: tytuł przepisu, listę składników (z ilościami o ile rozpoznane), kroki przygotowania, makroskładniki (białko, węglowodany, tłuszcze) jeśli występują w tekście.  
+- Po przyjęciu pliku system parsuje PDF lokalnie na ustrukturyzowany JSON zawierający co najmniej: tytuł przepisu, listę składników (wraz z rozpoznanymi ilościami i jednostkami, jeśli dostępne), kroki przygotowania, makroskładniki (białko, węglowodany, tłuszcze) oraz metadane strony i fragmentów tekstu.  
+- Wyodrębniony JSON jest zapisywany w bazie danych powiązanej z kontem użytkownika; oryginalny PDF jest przechowywany zgodnie z polityką retencji (retencja 6 miesięcy).  
+- Dalsze przetwarzanie i klasyfikacja (np. automatyczna kategoryzacja, wzbogacanie metadanych) odbywa się na poziomie JSON — do modelu LLM wysyłany jest wyłącznie wygenerowany JSON (nie cały plik PDF), aby zmniejszyć transfer danych i przyspieszyć pipeline.  
 - Każde wyodrębnione pole otrzymuje metrykę pewności (confidence score).  
-- Wyniki przetwarzania zapisywane są powiązane z kontem użytkownika wraz z oryginalnym PDF.
+- Wyniki przetwarzania zapisywane są powiązane z kontem użytkownika wraz z odwołaniem do oryginalnego PDF.
 
 3.2 Zarządzanie przepisami
 - Wyświetlanie listy przepisów z informacją o pewności ekstrakcji i linkiem do edycji.  
@@ -45,7 +47,7 @@ Użytkownicy posiadają e-booki z przepisami (często w formacie PDF), które tr
 - Rejestracja i logowanie (email + hasło).  
 - Przechowywanie danych użytkownika i jego przesłanych plików/przepisów.  
 - Ograniczenie dostępu: każdy użytkownik widzi jedynie swoje pliki i przepisy.  
-- Szyfrowanie danych at-rest dla przechowywanych PDF-ów i wyodrębnionych treści.  
+- Szyfrowanie danych at-rest dla przechowywanych PDF-ów, JSON-ów z parsowania i wyodrębnionych treści.  
 - Akceptacja TOS z oświadczeniem o prawach do e-booka przed uploadem.
 
 3.6 Operacje i telemetria
@@ -64,7 +66,7 @@ Użytkownicy posiadają e-booki z przepisami (często w formacie PDF), które tr
 - Brak eksportu danych (CSV/JSON/Sync) w MVP.  
 - Brak natywnej aplikacji mobilnej w MVP (responsywna web app).  
 - Brak funkcji społecznościowych: udostępnianie, oceny, komentarze.  
-- Brak zaawansowanej personalizacji diet (kcal, alergeny) w MVP.  
+- Brak zaawansowanej personalizacji diet (kcal, alergeny) w MVP.
 
 ## 5. Historyjki użytkowników
 Lista wszystkich niezbędnych historyjek użytkownika (podstawowe, alternatywne i skrajne), każda z unikalnym ID i kryteriami akceptacji.
@@ -95,7 +97,8 @@ Tytuł: Upload pliku PDF (poprawny)
 Opis: Jako użytkownik chcę przesłać PDF z warstwą tekstową, aby system mógł wyodrębnić przepisy.
 Kryteria akceptacji:
 - GIVEN zalogowany użytkownik i zaakceptowane TOS, WHEN wyśle PDF <=100MB z warstwą tekstową i w limicie konta, THEN plik zostaje przyjęty i zadanie przetwarzania trafi do kolejki (status queued).
-- UI pokazuje postęp statusu (queued → processing → completed/failed).
+- Po przyjęciu pliku system parsuje PDF do strukturalnego JSON, zapisuje JSON w bazie danych powiązanej z kontem użytkownika, a następnie — w razie potrzeby — wysyła jedynie ten JSON do modelu LLM w celu klasyfikacji/augmentacji. Oryginalny PDF jest przechowywany zgodnie z polityką retencji.
+- UI pokazuje postęp statusu (queued → processing → completed/failed) oraz informuje, że dalsze kroki przetwarzania odbywają się na poziomie JSON.
 
 US-005
 Tytuł: Upload pliku przekraczającego limit
@@ -196,7 +199,7 @@ Tytuł: Przegląd przesłanych plików i zarządzanie nimi
 Opis: Jako użytkownik chcę przeglądać wszystkie przesłane PDF-y i usuwać je ręcznie.
 Kryteria akceptacji:
 - Widok plików pokazuje nazwę, rozmiar, datę uploadu i status przetwarzania.  
-- Usunięcie pliku nie usuwa powiązane przepisy.
+- Usunięcie pliku nie usuwa powiązane przepisy (JSON-owe wyniki parsowania pozostają zgodnie z polityką zachowania danych unless user requests deletion).
 
 US-019
 Tytuł: Zgoda na rejestrowanie korekt (anonimowo)
@@ -275,7 +278,8 @@ Tytuł: Uwierzytelnienie i autoryzacja API (dla przyszłych integracji)
 Opis: Jako deweloper chcę, aby API MVP wymagało uwierzytelnienia i respektowało granice zasobów, nawet jeśli integracje zewnętrzne są wyłączone.
 Kryteria akceptacji:
 - Wszystkie endpointy wymagające dostępu do danych użytkownika wymagają tokena sesji lub cookie sesyjnego.  
-- Endpointy chroniące pliki i przepisy zwracają 403 przy braku autoryzacji.
+- Endpointy chroniące pliki, JSON-owe wyniki parsowania i przepisy zwracają 403 przy braku autoryzacji.  
+- Interakcje z usługami modelowymi (LLM) korzystają z ustrukturyzowanego JSON zapisanego w bazie; API eksponuje bezpieczne endpointy do pobrania/minifikacji tego JSON przed wysłaniem do zewnętrznych modeli.
 
 
 ## 6. Metryki sukcesu
@@ -296,8 +300,7 @@ Lista kluczowych metryk i kryteriów sukcesu do monitorowania po uruchomieniu MV
 - Telemetria i jakość:
   - Liczba korekt użytkowników (źródło danych dla ETL).  
   - Liczba błędów krytycznych przetwarzania na 1000 uploadów.
-
-Kontrola jakości i testy:
+- Kontrola jakości i testy:
 - Automatyczne testy regresyjne uruchamiane na zbiorze kontrolnym (dostarczonym przez użytkownika) po każdej istotnej zmianie parsowania, raportujące accuracy per pole.  
 - Testy obciążeniowe pipeline'u asynchronicznego, by potwierdzić SLA latencji.
 
@@ -309,4 +312,4 @@ Lista kontrolna PRD (przejrzeć przed przekazaniem do developmentu):
 - Czy mamy wystarczająco dużo historyjek, aby zbudować funkcjonalną aplikację? Tak — uwzględniono podstawowe, alternatywne i skrajne scenariusze.  
 - Czy uwzględniono uwierzytelnianie i autoryzację? Tak — US-001, US-002 i US-030 oraz wymogi bezpieczeństwa w sekcji 3.5.
 
-Plik zapisany jako .ai/prd.md zawiera pełny PRD gotowy do przekazania zespołowi produktowo-technologicznemu.
+Plik zapisany jako .ai/prd.md zawiera zaktualizowany PRD z opisem pipelineu: PDF → JSON → zapis w DB → LLM otrzymuje tylko JSON.
